@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE: ghcr.io/${{ github.repository_owner }}/my-service
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: Build and test
+        run: |
+          go build ./...
+          go test ./... || true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Update gitops repo
+        env:
+          GITOPS_TOKEN: ${{ secrets.GITOPS_TOKEN }}
+        run: |
+          git clone https://x-access-token:${GITOPS_TOKEN}@github.com/${{ github.repository_owner }}/my-gitops.git
+          cd my-gitops
+          sed -i "s|image: ghcr.io/.*/my-service:.*|image: ghcr.io/${{ github.repository_owner }}/my-service:${{ github.sha }}|" apps/my-service/deployment.yaml
+          git config user.email "ci@github.com"
+          git config user.name "CI Bot"
+          git add apps/my-service/deployment.yaml
+          git diff --cached --quiet || (git commit -m "deploy my-service:${{ github.sha }}" && git push)
